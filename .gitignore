@@ -1,4 +1,5 @@
 /input
 /.project
 /.pydevproject
-/*.pyc
+*.pyc
+/SPHY_mass_conserving_glaciers_WI.docx
