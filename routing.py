@@ -23,7 +23,7 @@
 __author__ = "Wilco Terink"
 __copyright__ = "Wilco Terink"
 __license__ = "GPL"
-__version__ = "2.0"
+__version__ = "erosion testing"
 __email__ = "w.terink@futurewater.nl, terinkw@gmail.com"
 __date__ ='1 January 2017'
 ############################################################################################

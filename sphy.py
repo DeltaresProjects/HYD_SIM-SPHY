@@ -23,7 +23,7 @@
 __author__ = "Wilco Terink"
 __copyright__ = "Wilco Terink"
 __license__ = "GPL"
-__version__ = "2.0"
+__version__ = "erosion testing"
 __email__ = "w.terink@futurewater.nl, terinkw@gmail.com"
 __date__ ='1 January 2017'
 ############################################################################################
@@ -45,7 +45,7 @@ class sphy(pcrm.DynamicModel):
 		# Print model info
 		print 	'The Spatial Processes in HYdrology (SPHY) model is ' \
 				'developed by Wilco Terink (FutureWater), Wageningen, The Netherlands'
-		print   'Version 2.0'
+		print   'Version 2.1 erosion testing'
 		print ' '
 
 		# Read the modules to be used
@@ -53,9 +53,10 @@ class sphy(pcrm.DynamicModel):
 		self.SnowFLAG = config.getint('MODULES','SnowFLAG')
 		self.RoutFLAG = config.getint('MODULES','RoutFLAG')
 		self.ResFLAG = config.getint('MODULES','ResFLAG')
+		self.LakeFLAG = config.getint('MODULES','LakeFLAG')
 		self.DynVegFLAG = config.getint('MODULES','DynVegFLAG')
-		self.IrriFLAG = config.getint('MODULES','IrriFLAG')
 		self.GroundFLAG = config.getint('MODULES','GroundFLAG')
+		self.SedFLAG = config.getint('MODULES','SedFLAG')
 		
 		# import the required modules
 		import datetime, calendar, reporting, timecalc, ET, rootzone, subzone
@@ -86,31 +87,32 @@ class sphy(pcrm.DynamicModel):
 			import routing # simple routing scheme
 			self.routing = routing
 			del routing
+		if self.LakeFLAG == 1:
+			import lakes # import lake module
+			self.lakes = lakes
+			del lakes
 		if self.ResFLAG == 1:
-			import reservoir_routing # overwrites the simple routing module
-			self.routing = reservoir_routing
-			del reservoir_routing
+			import reservoirs # import reservoir module
+			self.reservoirs = reservoirs
+			del reservoirs
+		if self.LakeFLAG == 1 or self.ResFLAG == 1:
+			import advanced_routing  # overwrite the simple routing scheme
+			self.routing = advanced_routing
+			del advanced_routing
+			self.RoutFLAG = 0
 		if self.DynVegFLAG == 1:
 			import dynamic_veg # dynamic crop growth using ndvi or kc time-series
 			self.dynamic_veg = dynamic_veg
 			del dynamic_veg
-		if self.IrriFLAG == 1:
-			import irrigation # irrigation module
-			self.irrigation = irrigation
-			del irrigation
 		if self.GroundFLAG == 1:
 			import groundwater # groundwater storage as third storage layer. This is used instead of a fixed bottomflux
 			self.groundwater = groundwater
 			del groundwater
+		if self.SedFLAG == 1:
+			import sediment
+			self.sediment = sediment
+			del sediment
 			
-		#-check for the number of routing contributers
-		if self.GlacFLAG == 1:
-			self.contributers = 4
-		elif self.SnowFLAG == 1:
-			self.contributers = 3
-		else:
-			self.contributers = 2	
-
 		#-read the input and output directories from the configuration file
 		self.inpath = config.get('DIRS', 'inputdir')
 		self.outpath = config.get('DIRS', 'outputdir')
@@ -125,10 +127,6 @@ class sphy(pcrm.DynamicModel):
 		self.startdate = self.datetime.datetime(sy,sm,sd)
 		self.enddate = self.datetime.datetime(ey,em,ed)
 		
-		#-set the global options
-		pcr.setglobaloption('radians')
-		#-set the Solar constant (MJ/m2/min)
-		self.Gsc = 0.0820
 		#-set the 2000 julian date number
 		self.julian_date_2000 = 2451545
 		#-set the option to calculate the fluxes in mm for the upstream area
@@ -142,12 +140,9 @@ class sphy(pcrm.DynamicModel):
 		#-read general maps
 		self.DEM = pcr.readmap(self.inpath + config.get('GENERAL','dem'))
 		self.Slope = pcr.readmap(self.inpath + config.get('GENERAL','Slope'))
-		self.Sub = pcr.readmap(self.inpath + config.get('GENERAL','Sub'))
 		self.Locations = pcr.readmap(self.inpath + config.get('GENERAL','locations'))
 		
-		
 		#-read soil maps
-		#self.Soil = pcr.readmap(self.inpath + config.get('SOIL','Soil'))
 		self.RootFieldMap = pcr.readmap(self.inpath + config.get('SOIL','RootFieldMap'))
 		self.RootSatMap = pcr.readmap(self.inpath + config.get('SOIL','RootSatMap'))
 		self.RootDryMap = pcr.readmap(self.inpath + config.get('SOIL','RootDryMap'))
@@ -202,12 +197,13 @@ class sphy(pcrm.DynamicModel):
 			self.SoilMax = self.RootSat + self.SubSat
 			self.SoilMin = self.RootDry + self.SubField
 
+		#-read the land use map
+		self.LandUse = pcr.readmap(self.inpath + config.get('LANDUSE','LandUse'))
 		#-read the crop coefficient table if the dynamic vegetation module is not used
 		if self.DynVegFLAG == 0:
 			self.KcStatFLAG = config.getint('LANDUSE', 'KCstatic')
 			if self.KcStatFLAG == 1:
-				#-read land use map and kc table
-				self.LandUse = pcr.readmap(self.inpath + config.get('LANDUSE','LandUse'))
+				#-read kc table
 				self.kc_table = self.inpath + config.get('LANDUSE','CropFac')
 				self.Kc = pcr.lookupscalar(self.kc_table, self.LandUse)
 			else:
@@ -247,8 +243,11 @@ class sphy(pcrm.DynamicModel):
 		
 		#-read and set climate forcing and the calculation of etref
 		self.Prec = self.inpath + config.get('CLIMATE','Prec')
-		self.Tair = self.inpath + config.get('CLIMATE','Tair')
 		self.ETREF_FLAG = config.getint('ETREF','ETREF_FLAG')
+		#-only define avg daily temperature maps if glacier, or snow modules are used, or if a etref needs to
+		# be calculated based on Hargreaves
+		if self.SnowFLAG==1 or self.GlacFLAG==1 or self.ETREF_FLAG==0:
+			self.Tair = self.inpath + config.get('CLIMATE','Tair')
 		#-determine the use of a given etref time-series or calculate etref using Hargreaves
 		if self.ETREF_FLAG == 1:
 			self.ETref = self.inpath + config.get('ETREF','ETref')
@@ -262,46 +261,125 @@ class sphy(pcrm.DynamicModel):
 			del hargreaves
 		
 		#-read and set routing maps and parameters
-		if self.RoutFLAG == 1 or self.ResFLAG == 1:
+		if self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1:
 			self.FlowDir = pcr.readmap(self.inpath + config.get('ROUTING','flowdir'))
 			try:
 				self.kx = pcr.readmap(self.inpath + config.get('ROUTING','kx'))
 			except:
 				self.kx = config.getfloat('ROUTING','kx')
+			#-rout individual flow components?
+			self.RoutComponents = config.getint('ROUTING', 'Rout_components')
 		
-		#-read and set reservoir maps and parameters
-		if self.ResFLAG == 1:
-			self.LakeID = pcr.readmap(self.inpath + config.get('RESERVOIR','lakeid'))
+		#-read lake maps and parameters if lake module is used
+		if self.LakeFLAG == 1:
+			pcr.setglobaloption('matrixtable')
+			# nominal map with lake IDs
+			self.LakeID = pcr.cover(pcr.readmap(self.inpath + config.get('LAKE','LakeId')), 0)
+			# lookup table with function for each lake (exp, 1-order poly, 2-order poly, 3-order poly)
+			LakeFunc_Tab = self.inpath + config.get('LAKE', 'LakeFunc')
+			# lookup table with Qh-coeficients for each lake
+			LakeQH_Tab = self.inpath + config.get('LAKE', 'LakeQH')
+			# lookup table with Sh-coeficients for each lake
+			LakeSH_Tab = self.inpath + config.get('LAKE', 'LakeSH')
+			# lookup table with hS-coeficients for each lake
+			LakeHS_Tab = self.inpath + config.get('LAKE', 'LakeHS')
+			# create lake coefficient maps
+			self.LakeQH_Func = pcr.lookupnominal(LakeFunc_Tab, 1, self.LakeID)
+			self.LakeSH_Func = pcr.lookupnominal(LakeFunc_Tab, 2, self.LakeID)
+			self.LakeHS_Func = pcr.lookupnominal(LakeFunc_Tab, 3, self.LakeID)
+			# Read QH coefficients
+			self.LakeQH_exp_a = pcr.lookupscalar(LakeQH_Tab, 1, self.LakeID) 
+			self.LakeQH_exp_b = pcr.lookupscalar(LakeQH_Tab, 2, self.LakeID)
+			self.LakeQH_pol_b = pcr.lookupscalar(LakeQH_Tab, 3, self.LakeID)
+			self.LakeQH_pol_a1 = pcr.lookupscalar(LakeQH_Tab, 4, self.LakeID)
+			self.LakeQH_pol_a2 = pcr.lookupscalar(LakeQH_Tab, 5, self.LakeID)
+			self.LakeQH_pol_a3 = pcr.lookupscalar(LakeQH_Tab, 6, self.LakeID)
+			# Read SH coefficients
+			self.LakeSH_exp_a = pcr.lookupscalar(LakeSH_Tab, 1, self.LakeID) 
+			self.LakeSH_exp_b = pcr.lookupscalar(LakeSH_Tab, 2, self.LakeID)
+			self.LakeSH_pol_b = pcr.lookupscalar(LakeSH_Tab, 3, self.LakeID)
+			self.LakeSH_pol_a1 = pcr.lookupscalar(LakeSH_Tab, 4, self.LakeID)
+			self.LakeSH_pol_a2 = pcr.lookupscalar(LakeSH_Tab, 5, self.LakeID)
+			self.LakeSH_pol_a3 = pcr.lookupscalar(LakeSH_Tab, 6, self.LakeID)
+			# Read HS coefficients
+			self.LakeHS_exp_a = pcr.lookupscalar(LakeHS_Tab, 1, self.LakeID) 
+			self.LakeHS_exp_b = pcr.lookupscalar(LakeHS_Tab, 2, self.LakeID)
+			self.LakeHS_pol_b = pcr.lookupscalar(LakeHS_Tab, 3, self.LakeID)
+			self.LakeHS_pol_a1 = pcr.lookupscalar(LakeHS_Tab, 4, self.LakeID)
+			self.LakeHS_pol_a2 = pcr.lookupscalar(LakeHS_Tab, 5, self.LakeID)
+			self.LakeHS_pol_a3 = pcr.lookupscalar(LakeHS_Tab, 6, self.LakeID)
+			#-read water level maps and parameters if available
 			try:
-				self.UpdateLakeLevel = pcr.readmap(self.inpath + config.get('RESERVOIR','updatelakelevel'))
-				self.LLevel = config.get('RESERVOIR','LakeFile')
+				self.UpdateLakeLevel = pcr.readmap(self.inpath + config.get('LAKE','updatelakelevel'))
+				self.LLevel = self.inpath + config.get('LAKE','LakeFile')
+				print 'measured lake levels will be used to update lake storage'
 			except:
 				pass
-			#-qh-function maps and parameters
-			self.qh_function = pcr.readmap(self.inpath + config.get('RESERVOIR','qh_function'))
-			self.qh_exp_a = pcr.readmap(self.inpath + config.get('RESERVOIR','qh_exp_a'))
-			self.qh_exp_b = pcr.readmap(self.inpath + config.get('RESERVOIR','qh_exp_b'))
-			self.qh_pol_b = pcr.readmap(self.inpath + config.get('RESERVOIR','qh_pol_b'))
-			self.qh_pol_a1 = pcr.readmap(self.inpath + config.get('RESERVOIR','qh_pol_a1'))
-			self.qh_pol_a2 = pcr.readmap(self.inpath + config.get('RESERVOIR','qh_pol_a2'))
-			self.qh_pol_a3 = pcr.readmap(self.inpath + config.get('RESERVOIR','qh_pol_a3'))
-			#-hs-function maps and parameters
-			self.hs_function = pcr.readmap(self.inpath + config.get('RESERVOIR','hs_function'))
-			self.hs_exp_a = pcr.readmap(self.inpath + config.get('RESERVOIR','hs_exp_a'))
-			self.hs_exp_b = pcr.readmap(self.inpath + config.get('RESERVOIR','hs_exp_b'))
-			self.hs_pol_b = pcr.readmap(self.inpath + config.get('RESERVOIR','hs_pol_b'))
-			self.hs_pol_a1 = pcr.readmap(self.inpath + config.get('RESERVOIR','hs_pol_a1'))
-			self.hs_pol_a2 = pcr.readmap(self.inpath + config.get('RESERVOIR','hs_pol_a2'))
-			self.hs_pol_a3 = pcr.readmap(self.inpath + config.get('RESERVOIR','hs_pol_a3'))
-			#-sh-function maps and parameters
-			self.sh_function = pcr.readmap(self.inpath + config.get('RESERVOIR','sh_function'))
-			self.sh_exp_a = pcr.readmap(self.inpath + config.get('RESERVOIR','sh_exp_a'))
-			self.sh_exp_b = pcr.readmap(self.inpath + config.get('RESERVOIR','sh_exp_b'))
-			self.sh_pol_b = pcr.readmap(self.inpath + config.get('RESERVOIR','sh_pol_b'))
-			self.sh_pol_a1 = pcr.readmap(self.inpath + config.get('RESERVOIR','sh_pol_a1'))
-			self.sh_pol_a2 = pcr.readmap(self.inpath + config.get('RESERVOIR','sh_pol_a2'))
-			self.sh_pol_a3 = pcr.readmap(self.inpath + config.get('RESERVOIR','sh_pol_a3'))	
-
+			pcr.setglobaloption('columntable')
+			
+		#-read reservior maps and parameters if reservoir module is used
+		if self.ResFLAG == 1:
+			pcr.setglobaloption('matrixtable')
+			# nominal map with reservoir IDs
+			self.ResID = pcr.cover(pcr.readmap(self.inpath + config.get('RESERVOIR','ResId')), 0)
+			# lookup table with operational scheme to use (simple or advanced)
+			ResFunc_Tab = self.inpath + config.get('RESERVOIR', 'ResFuncStor')
+			# Reservoir function
+			self.ResFunc = pcr.cover(pcr.lookupscalar(ResFunc_Tab, 1, self.ResID), 0)
+			try:
+				# lookup table with coefficients for simple reservoirs
+				ResSimple_Tab = self.inpath + config.get('RESERVOIR', 'ResSimple')
+				# Read coefficients for simple reservoirs
+				self.ResKr = pcr.lookupscalar(ResSimple_Tab, 1, self.ResID)
+				self.ResSmax = pcr.lookupscalar(ResSimple_Tab, 2, self.ResID) * 10**6 # convert to m3
+				self.ResSimple = True
+			except:
+				self.ResSimple = False
+			try:
+				# lookup table with coefficients for advanced reservoirs
+				ResAdvanced_Tab = self.inpath + config.get('RESERVOIR', 'ResAdv')
+				# Read coefficients for advanced reservoirs
+				self.ResEVOL = pcr.lookupscalar(ResAdvanced_Tab, 1, self.ResID) * 10**6 # convert to m3
+				self.ResPVOL = pcr.lookupscalar(ResAdvanced_Tab, 2, self.ResID) * 10**6 # convert to m3
+				self.ResMaxFl = pcr.lookupscalar(ResAdvanced_Tab, 3, self.ResID) * 10**6 # convert to m3/d
+				self.ResDemFl = pcr.lookupscalar(ResAdvanced_Tab, 4, self.ResID) * 10**6 # convert to m3/d
+				self.ResFlStart = pcr.lookupscalar(ResAdvanced_Tab, 5, self.ResID)
+				self.ResFlEnd = pcr.lookupscalar(ResAdvanced_Tab, 6, self.ResID)
+				self.ResAdvanced = True
+			except:
+				self.ResAdvanced = False
+			pcr.setglobaloption('columntable')
+				
+		#-read maps and parameters for sediment yield (soil loss)
+		if self.SedFLAG == 1:
+			pars = ['K_USLE', 'C_USLE', 'P_USLE', 'N']
+			for i in pars:
+				try:
+					setattr(self, i, config.getfloat('SEDIMENT', i))
+				except:
+					setattr(self, i, pcr.readmap(self.inpath + config.get('SEDIMENT', i)))
+			self.Rock = pcr.readmap(self.inpath + config.get('SEDIMENT', 'Rock_P'))
+			try:
+				self.Alpha_tc = config.getfloat('SEDIMENT', 'Alpha_tc')
+			except:
+				self.Alpha_tc = pcr.readmap(self.inpath + config.get('SEDIMENT', 'Alpha_tc'))
+			pcr.report(pcr.scalar(self.Alpha_tc), self.outpath + 'Alpha_tc.map')
+			try:
+				Labda_Infil = config.getfloat('SEDIMENT', 'Labda_infil')
+			except:
+				Labda_Infil = pcr.readmap(self.inpath + config.get('SEDIMENT', 'Labda_infil'))
+			self.LS_USLE = self.sediment.LS_ULSE(self, pcr)
+			self.CFRG = pcr.exp(-0.053 * self.Rock)
+			self.Tc = self.sediment.Tc(self, pcr)
+			pcr.report(self.Tc, self.outpath + 'Tc.map')
+			self.Infil_alpha = self.Alpha_tc / self.Tc + Labda_Infil  #-parameter that affects the speed in which infiltration capacity decreases.
+			pcr.report(self.Tc, self.outpath + 'Infil_alpha.map')
+			self.ha_area = pcr.cellarea() / 10000
+			self.SedRoutFLAG = config.getint('SEDIMENT', 'Sed_ROUT')
+		
+		#-set the global option for radians
+		pcr.setglobaloption('radians')
+	
 	def initial(self):
 
 		#-initial section
@@ -382,7 +460,6 @@ class sphy(pcrm.DynamicModel):
 			if self.SeepStatFLAG == 0:
 				self.SeepOld = pcr.scalar(0)
 				
-
 		#-initial snow properties
 		if self.SnowFLAG == 1:
 			try:
@@ -403,52 +480,94 @@ class sphy(pcrm.DynamicModel):
 			except:
 				self.GlacFrac = pcr.readmap(self.inpath + config.get('GLACIER_INIT','GlacFrac'))
 			
-		#-initial routed total runoff and of individual components
-		if self.RoutFLAG == 1 or self.ResFLAG == 1:
+		#-initial routed total runoff and of individual components (this is only used if lakes and reservoir modules are both NOT used)
+		if self.RoutFLAG == 1:
 			#-initial routed total runoff
 			try:
 				self.QRAold = config.getfloat('ROUT_INIT','QRA_init')
 			except:
 				self.QRAold = pcr.readmap(self.inpath + config.get('ROUT_INIT','QRA_init'))
 			#-initial routed runoff	for the individual components
-			pars = ['RainRA','BaseRA','SnowRA','GlacRA']
+			pars = ['RainRA','SnowRA','GlacRA','BaseRA']
 			for i in pars:
 				try:
 					setattr(self, i + 'old', pcr.readmap(self.inpath + config.get('ROUT_INIT', i + '_init')))
-					setattr(self, i + '_FLAG', 1)
+					setattr(self, i + '_FLAG', True)
 				except:
 					try:
 						setattr(self, i + 'old', config.getfloat('ROUT_INIT', i + '_init'))
-						setattr(self, i + '_FLAG', 1)
+						setattr(self, i + '_FLAG', True)
 					except:
-						setattr(self, i + '_FLAG', 0)
-
-		#-initial storage in reservoirs and storage of individual components
-		if self.ResFLAG == 1:
-			#-initial total storage in reservoirs
+						setattr(self, i + '_FLAG', False)
+		
+		#-initial storage in lakes and reservoirs
+		if self.LakeFLAG == 1 or self.ResFLAG == 1:
 			try:
-				self.StorAct = pcr.readmap(self.inpath + config.get('RESER_INIT', 'StorInit'))
+				self.StorAct = pcr.readmap(self.inpath + config.get('STOR_INIT','Stor_init'))
 			except:
-				self.StorAct = config.getfloat('RESER_INIT', 'StorInit')
-			#-initial storage in reservoirs of individual components
-			pars = ['RainRA','BaseRA','SnowRA','GlacRA']
-			for i in pars:
-				if eval('self.' + i + '_FLAG') == 1:
+				try:
+					self.StorAct = config.getfloat('STOR_INIT', 'Stor_init')
+				except: #-if no storage map or value is provided, then read initial storage from table and/or reservoir file
+					if self.LakeFLAG == 1:
+						LakeStor_Tab = self.inpath + config.get('LAKE', 'LakeStor')
+						self.StorAct = pcr.cover(pcr.lookupscalar(LakeStor_Tab, 1, self.LakeID), 0) * 10**6  # convert to m3
+					if self.ResFLAG == 1:
+						ResStor_Tab = self.inpath + config.get('RESERVOIR', 'ResFuncStor')
+						ResStor = pcr.cover(pcr.lookupscalar(ResStor_Tab, 2, self.ResID), 0) * 10**6  # convert to m3
+						try:
+							self.StorAct = self.StorAct + ResStor
+						except:
+							self.StorAct = ResStor
+			
+			#-Routing of individual flow components?
+			pars = ['RainRA','SnowRA','GlacRA','BaseRA']
+			if self.RoutComponents == 1:
+				for i in pars:
 					try:
-						setattr(self, i + 'stor', pcr.readmap(self.inpath + config.get('RESER_INIT', i + '_istor')))
+						setattr(self, i + 'stor', pcr.readmap(self.inpath + config.get('STOR_INIT', i + '_init')))
+						setattr(self, i + '_FLAG', True)
 					except:
-						setattr(self, i + 'stor', config.getfloat('RESER_INIT', i + '_istor'))
-
+						try:
+							setattr(self, i + 'stor', config.getfloat('STOR_INIT', i + '_init'))
+							setattr(self, i + '_FLAG', True)
+						except:
+							column = pars.index(i)  # identify column to be read from lake or reservoir table
+							try: #-try to sum the storages read from the lake and reservoir tables if both thse modules are used
+								setattr(self, i + 'stor', (pcr.cover(pcr.lookupscalar(LakeStor_Tab, column + 2, self.LakeID), 0) + \
+														pcr.cover(pcr.lookupscalar(ResStor_Tab, column + 3, self.ResID), 0)) * 10**6)
+								setattr(self, i + '_FLAG', True)
+							except:
+								try: #-try to read the storages from the lake table
+									setattr(self, i + 'stor', pcr.cover(pcr.lookupscalar(LakeStor_Tab, column + 2, self.LakeID), 0) * 10**6)
+									setattr(self, i + '_FLAG', True)
+								except: #-try to read the storages from the reservoir table
+									try:
+										setattr(self, i + 'stor', pcr.cover(pcr.lookupscalar(ResStor_Tab, column + 3, self.ResID), 0) * 10**6)
+										setattr(self, i + '_FLAG', True)
+									except:
+										setattr(self, i + '_FLAG', False)
+			else:
+				for i in pars:
+					setattr(self, i + '_FLAG', False)
+		
+		#-Initial routed volume of sediment
+		if self.SedFLAG == 1 and self.RoutFLAG == 1 and self.SedRoutFLAG == 1:
+			try:
+				self.SYieldR = pcr.readmap(self.inpath + config.get('SEDIMENT', 'Sed_init'))
+			except:
+				self.SYieldR =  config.getfloat('SEDIMENT', 'Sed_init')
+				
+		
 		#-Initial values for reporting and setting of time-series
 		#-set time-series reporting for mm flux from upstream area for prec and eta 
-		if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1): 
+		if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1): 
 			self.PrecSubBasinTSS = pcrm.TimeoutputTimeseries("PrecSubBasinTSS", self, self.Locations, noHeader=False)
 			self.ETaSubBasinTSS = pcrm.TimeoutputTimeseries("ETaSubBasinTSS", self, self.Locations, noHeader=False)
 		if self.GlacFLAG == 1:
 			pars = ['wbal','GWL','TotPrec','TotPrecF','TotPrecEF','TotIntF','TotRain','TotRainF','TotETpot','TotETpotF','TotETact','TotETactF','TotSnow','TotSnowF','TotSnowMelt','TotSnowMeltF','TotGlacMelt','TotGlacMeltF','TotRootRF','TotRootDF','TotRootPF',\
-				'TotSubPF','TotCapRF','TotGlacPercF','TotGwRechargeF','TotRainRF','TotBaseRF','TotSnowRF','TotGlacRF','TotRF','RainRAtot','SnowRAtot','GlacRAtot','BaseRAtot','QallRAtot']
+				'TotSubPF','TotCapRF','TotGlacPercF','TotGwRechargeF','TotRainRF','TotBaseRF','TotSnowRF','TotGlacRF','TotRF','RainRAtot','SnowRAtot','GlacRAtot','BaseRAtot','QallRAtot', 'TotStor', 'RainStor', 'SnowStor', 'GlacStor', 'BaseStor']
 			#-set time-series reporting for mm fluxes from upstream area if glacier and routing/reservoir modules are used
-			if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+			if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 				self.GMeltSubBasinTSS = pcrm.TimeoutputTimeseries("GMeltSubBasinTSS", self, self.Locations, noHeader=False)
 				self.QSNOWSubBasinTSS = pcrm.TimeoutputTimeseries("QSNOWSubBasinTSS", self, self.Locations, noHeader=False)
 				self.QRAINSubBasinTSS = pcrm.TimeoutputTimeseries("QRAINSubBasinTSS", self, self.Locations, noHeader=False)
@@ -458,18 +577,18 @@ class sphy(pcrm.DynamicModel):
 		elif self.SnowFLAG == 1:
 			if self.GroundFLAG == 1:		
 				pars = ['wbal','GWL','TotPrec','TotPrecF','TotPrecEF','TotIntF','TotRain','TotRainF','TotETpot','TotETpotF','TotETact','TotETactF','TotSnow','TotSnowF','TotSnowMelt','TotSnowMeltF','TotRootRF','TotRootDF','TotRootPF',\
-					'TotSubPF','TotCapRF','TotGwRechargeF','TotRainRF','TotBaseRF','TotSnowRF','TotRF','RainRAtot','SnowRAtot','BaseRAtot','QallRAtot']
+					'TotSubPF','TotCapRF','TotGwRechargeF','TotRainRF','TotBaseRF','TotSnowRF','TotRF','RainRAtot','SnowRAtot','BaseRAtot','QallRAtot', 'TotStor', 'RainStor', 'SnowStor', 'GlacStor', 'BaseStor']
 				#-set time-series reporting for mm fluxes from upstream area if snow, groundwater and routing/reservoir modules are used
-				if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+				if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 					self.QSNOWSubBasinTSS = pcrm.TimeoutputTimeseries("QSNOWSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QRAINSubBasinTSS = pcrm.TimeoutputTimeseries("QRAINSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QBASFSubBasinTSS = pcrm.TimeoutputTimeseries("QBASFSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QTOTSubBasinTSS = pcrm.TimeoutputTimeseries("QTOTSubBasinTSS", self, self.Locations, noHeader=False)
 			else:
 				pars = ['wbal','GWL','TotPrec','TotPrecF','TotPrecEF','TotIntF','TotRain','TotRainF','TotETpot','TotETpotF','TotETact','TotETactF','TotSnow','TotSnowF','TotSnowMelt','TotSnowMeltF','TotRootRF','TotRootDF','TotRootPF',\
-					'TotSubDF','TotCapRF','TotSeepF','TotRainRF','TotSnowRF','TotRF','RainRAtot','SnowRAtot','BaseRAtot','QallRAtot']
+					'TotSubDF','TotCapRF','TotSeepF','TotRainRF','TotSnowRF','TotRF','RainRAtot','SnowRAtot','BaseRAtot','QallRAtot', 'TotStor', 'RainStor', 'SnowStor', 'GlacStor', 'BaseStor']
 				#-set time-series reporting for mm fluxes from upstream area if snow and routing/reservoir modules are used
-				if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+				if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 					self.SeepSubBasinTSS = pcrm.TimeoutputTimeseries("SeepSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QSNOWSubBasinTSS = pcrm.TimeoutputTimeseries("QSNOWSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QRAINSubBasinTSS = pcrm.TimeoutputTimeseries("QRAINSubBasinTSS", self, self.Locations, noHeader=False)
@@ -478,24 +597,30 @@ class sphy(pcrm.DynamicModel):
 		else:
 			if self.GroundFLAG == 1:
 				pars = ['wbal','GWL','TotPrec','TotPrecF','TotPrecEF','TotIntF','TotRain','TotRainF','TotETpot','TotETpotF','TotETact','TotETactF','TotRootRF','TotRootDF','TotRootPF',\
-					'TotSubPF','TotCapRF','TotGwRechargeF','TotRainRF','TotBaseRF','TotRF','RainRAtot','BaseRAtot','QallRAtot']
+					'TotSubPF','TotCapRF','TotGwRechargeF','TotRainRF','TotBaseRF','TotRF','RainRAtot','BaseRAtot','QallRAtot', 'TotStor', 'RainStor', 'SnowStor', 'GlacStor', 'BaseStor']
 				#-set time-series reporting for mm fluxes from upstream area if groundwater and routing/reservoir modules are used
-				if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+				if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 					self.QRAINSubBasinTSS = pcrm.TimeoutputTimeseries("QRAINSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QBASFSubBasinTSS = pcrm.TimeoutputTimeseries("QBASFSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QTOTSubBasinTSS = pcrm.TimeoutputTimeseries("QTOTSubBasinTSS", self, self.Locations, noHeader=False)
 			else:
 				pars = ['wbal','GWL','TotPrec','TotPrecF','TotPrecEF','TotIntF','TotRain','TotRainF','TotETpot','TotETpotF','TotETact','TotETactF','TotRootRF','TotRootDF','TotRootPF',\
-					'TotSubDF','TotCapRF','TotSeepF','TotRainRF','TotRF','RainRAtot','BaseRAtot','QallRAtot']
+					'TotSubDF','TotCapRF','TotSeepF','TotRainRF','TotRF','RainRAtot','BaseRAtot','QallRAtot', 'TotStor', 'RainStor', 'SnowStor', 'GlacStor', 'BaseStor']
 				#-set time-series reporting for mm fluxes from upstream area if routing/reservoir modules are used
-				if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+				if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 					self.SeepSubBasinTSS = pcrm.TimeoutputTimeseries("SeepSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QRAINSubBasinTSS = pcrm.TimeoutputTimeseries("QRAINSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QBASFSubBasinTSS = pcrm.TimeoutputTimeseries("QBASFSubBasinTSS", self, self.Locations, noHeader=False)
 					self.QTOTSubBasinTSS = pcrm.TimeoutputTimeseries("QTOTSubBasinTSS", self, self.Locations, noHeader=False)
+		#-add sediment reporting options to pars if sediment module is used
+		if self.SedFLAG == 1:
+			pars.extend(['QPeak', 'SYield'])
+			if self.RoutFLAG == 1 and self.SedRoutFLAG == 1:
+				pars.extend(['SYieldRA'])
+		
 		#-remove routing output from reported list of parameters if these modules are not used			
-		if self.RoutFLAG == 0 and self.ResFLAG == 0:
-				rpars = ['RainRAtot','SnowRAtot','GlacRAtot','BaseRAtot','QallRAtot']
+		if self.RoutFLAG == 0 and self.ResFLAG == 0 and self.LakeFLAG == 0:
+				rpars = ['RainRAtot','SnowRAtot','GlacRAtot','BaseRAtot','QallRAtot', 'TotStor', 'RainStor', 'SnowStor', 'GlacStor', 'BaseStor']
 				for i in rpars:
 					try:
 						j = pars.index(i)
@@ -512,13 +637,7 @@ class sphy(pcrm.DynamicModel):
 				print i + ' will be reported'
 				fname = config.get('REPORTING', i+'_fname')
 				setattr(self, i+'_fname', fname)
-				try:
-					setattr(self, i, pcr.readmap(self.inpath + config.get('INITTOT', i)))
-				except:
-					try:
-						setattr(self, i, config.getfloat('INITTOT', i)) 
-					except:
-						setattr(self, i, 0.)
+				setattr(self, i, 0.)  # use this instead of the commented part above, because it is more logical to always zero as initial condition for reporting
 				if mapoutops != 'NONE':
 					mapoutops = mapoutops.split(",")
 					for j in mapoutops:
@@ -546,6 +665,17 @@ class sphy(pcrm.DynamicModel):
 						elif j == 'Y':
 							setattr(self, i+'_Year', eval('self.'+i))
 							setattr(self, i+'_YearTS', eval('pcrm.TimeoutputTimeseries("'+fname+'YTS'+'", self, self.Locations, noHeader=False)'))
+		
+		#-set reporting of water balances for lakes
+		if self.LakeFLAG == 1 and config.getint('REPORTING', 'Lake_wbal') ==1:
+			self.LakeInTSS = pcrm.TimeoutputTimeseries("LakeInTSS", self, self.LakeID, noHeader=True)
+			self.LakeOutTSS = pcrm.TimeoutputTimeseries("LakeOutTSS", self, self.LakeID, noHeader=True)
+			self.LakeStorTSS = pcrm.TimeoutputTimeseries("LakeStorTSS", self, self.LakeID, noHeader=True)
+		#-set reporting of water balances for reservoirs
+		if self.ResFLAG == 1 and config.getint('REPORTING', 'Res_wbal') == 1:
+			self.ResInTSS = pcrm.TimeoutputTimeseries("ResInTSS", self, self.ResID, noHeader=True)
+			self.ResOutTSS = pcrm.TimeoutputTimeseries("ResOutTSS", self, self.ResID, noHeader=True)
+			self.ResStorTSS = pcrm.TimeoutputTimeseries("ResStorTSS", self, self.ResID, noHeader=True)
 
 	def dynamic(self):
 		self.counter+=1
@@ -565,8 +695,10 @@ class sphy(pcrm.DynamicModel):
 		self.reporting.reporting(self, pcr, 'TotPrec', Precip)
 		self.reporting.reporting(self, pcr, 'TotPrecF', Precip * (1-self.GlacFrac))
 		
-		#-Temperature and reference evapotranspiration
-		Temp = pcr.readmap(pcrm.generateNameT(self.Tair, self.counter))
+		#-Temperature
+		if self.SnowFLAG==1 or self.GlacFLAG==1 or self.ETREF_FLAG==0:
+			Temp = pcr.readmap(pcrm.generateNameT(self.Tair, self.counter))
+		#-Reference evapotranspiration
 		if self.ETREF_FLAG == 0:
 			TempMax = pcr.readmap(pcrm.generateNameT(self.Tmax, self.counter))
 			TempMin = pcr.readmap(pcrm.generateNameT(self.Tmin, self.counter))
@@ -610,7 +742,7 @@ class sphy(pcrm.DynamicModel):
 			except:
 				self.Kc = self.KcOld
 		#-report mm effective precipitation for sub-basin averages		
-		if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+		if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 			self.PrecSubBasinTSS.sample(pcr.catchmenttotal(Precip * (1-self.GlacFrac), self.FlowDir) / pcr.catchmenttotal(1, self.FlowDir))		
 		
 		# Snow and rain
@@ -661,7 +793,7 @@ class sphy(pcrm.DynamicModel):
 			#-Report glacier melt
 			self.reporting.reporting(self, pcr, 'TotGlacMelt', GlacMelt)
 			self.reporting.reporting(self, pcr, 'TotGlacMeltF', GlacMelt * self.GlacFrac)
-			if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+			if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 				self.GMeltSubBasinTSS.sample(pcr.catchmenttotal(GlacMelt * self.GlacFrac, self.FlowDir) / pcr.catchmenttotal(1, self.FlowDir))
 			#-Glacier runoff
 			GlacR = self.glacier.GlacR(self.GlacF, GlacMelt, self.GlacFrac)
@@ -676,17 +808,18 @@ class sphy(pcrm.DynamicModel):
 			GlacMelt = 0
 			GlacPerc = 0
 		
-		#-Potential evapotranspiration (THIS SHOULD STILL BE IMPROVED WITH DYNAMIC VEGETATION MODULE)
+		#-Potential evapotranspiration
 		ETpot = self.ET.ETpot(ETref, self.Kc) 
 		#-Report ETpot
 		self.reporting.reporting(self, pcr, 'TotETpot', ETpot)
 		self.reporting.reporting(self, pcr, 'TotETpotF', ETpot * RainFrac)
 				
 		#-Rootzone calculations
-		self.RootWater = self.RootWater + pcr.ifthenelse(RainFrac > 0, Rain, 0) + self.CapRise
+		self.RootWater = self.RootWater + self.CapRise
 		#-Rootzone runoff
-		RootRunoff = self.rootzone.RootRunoff(pcr, RainFrac, self.RootWater, self.RootSat)
-		self.RootWater = self.RootWater - RootRunoff
+		tempvar = self.rootzone.RootRunoff(self, pcr, RainFrac, Rain)
+		RootRunoff = tempvar[0]
+		self.RootWater = tempvar[1]
 		#-Actual evapotranspiration
 		etreddry = pcr.max(pcr.min((self.RootWater - self.RootDry) / (self.RootWilt - self.RootDry), 1), 0)
 		ETact = self.ET.ETact(pcr, ETpot, self.RootWater, self.RootSat, etreddry, RainFrac)
@@ -696,7 +829,7 @@ class sphy(pcrm.DynamicModel):
 		ActETact = ETact * RainFrac	
 		#-Report the actual evapotranspiration, corrected for rain fraction
 		self.reporting.reporting(self, pcr, 'TotETactF', ActETact)
-		if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+		if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 			self.ETaSubBasinTSS.sample(pcr.catchmenttotal(ActETact, self.FlowDir) / pcr.catchmenttotal(1, self.FlowDir))
 		#-Update rootwater content
 		self.RootWater = pcr.max(self.RootWater - ETact, 0)
@@ -723,10 +856,10 @@ class sphy(pcrm.DynamicModel):
 			#-Report seepage
 			self.reporting.reporting(self, pcr, 'TotSeepF', pcr.scalar(self.SeePage))
 			self.SubWater = pcr.min(pcr.max(self.SubWater - self.SeePage, 0), self.SubSat)
-			if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1):
+			if self.mm_rep_FLAG == 1 and (self.RoutFLAG == 1 or self.ResFLAG == 1 or self.LakeFLAG == 1):
 				self.SeepSubBasinTSS.sample(pcr.catchmenttotal(self.SeePage, self.FlowDir) / pcr.catchmenttotal(1, self.FlowDir))
 		#-Capillary rise
-		self.CapRise = self.subzone.CapilRise(pcr, etreddry, self.SubField, self.SubSat, self.SubWater, self.CapRiseMax)
+		self.CapRise = self.subzone.CapilRise(pcr, self.SubField, self.SubWater, self.CapRiseMax, self.RootWater, self.RootSat, self.RootField)
 		#-Report capillary rise, corrected for fraction
 		self.reporting.reporting(self, pcr, 'TotCapRF', self.CapRise * (1-self.GlacFrac))
 		#-Update sub soil water content
@@ -791,6 +924,16 @@ class sphy(pcrm.DynamicModel):
 			GWL = self.GWL_base - (SoilRel-0.5) * self.GWL_base
 			#-Report groundwater
 			self.reporting.reporting(self, pcr, 'GWL', GWL)
+			
+		#-Sediment yield
+		if self.SedFLAG == 1:
+			q_peak = self.sediment.q_peak(self, pcr, RootR)  #-peak runoff in m3/s
+			sed = self.sediment.Musle(self, pcr, RootR, q_peak) #-sediment yield in ton/cellarea
+			self.reporting.reporting(self, pcr, 'QPeak', q_peak)
+			self.reporting.reporting(self, pcr, 'SYield', sed)
+			if self.RoutFLAG == 1 and self.SedRoutFLAG == 1: #-routing of sediment yield
+				self.SYieldR = self.sediment.SRout(self, pcr, sed)
+				self.reporting.reporting(self, pcr, 'SYieldRA', self.SYieldR)
 		
 		#-Report Total runoff
 		self.reporting.reporting(self, pcr, 'TotRF', self.BaseR + RainR + SnowR + GlacR)
@@ -803,77 +946,90 @@ class sphy(pcrm.DynamicModel):
 			waterbalance = Precip - ActETact - self.SeePage - SnowR - RainR - self.BaseR - (self.SoilWater-OldSoilWater) - (self.TotalSnowStore-OldTotalSnowStore)
 		self.reporting.reporting(self, pcr, 'wbal', waterbalance)
 		
-		#-Routing for reservoir module
-		if self.ResFLAG == 1:
-			self.StorAct = self.routing.Storage(pcr, self.StorAct, self.BaseR, RainR, GlacR, SnowR)
-			#-Check if measured lake levels area available
-			try:
-				LakeLevel = pcr.readmap(pcrm.generateNameT(self.LLevel, self.counter))
-				#-Calculate fraction to rout
-				tempvar = self.routing.QFRACSTOR(pcr, self.StorAct, self.LakeID, self.UpdateLakeLevel, self.qh_function, self.qh_exp_a, \
-					self.qh_exp_b, self.qh_pol_b, self.qh_pol_a1, self.qh_pol_a2, self.qh_pol_a3, self.hs_function, self.hs_exp_a, \
-					self.hs_exp_b, self.hs_pol_b, self.hs_pol_a1, self.hs_pol_a2, self.hs_pol_a3, self.sh_function, self.sh_exp_a, \
-					self.sh_exp_b, self.sh_pol_b, self.sh_pol_a1, self.sh_pol_a2, self.sh_pol_a3, LakeLevel, 1)
-			except:
-				#-Calculate fraction to rout
-				tempvar = self.routing.QFRACSTOR(pcr, self.StorAct, self.LakeID, 0, self.qh_function, self.qh_exp_a, \
-					self.qh_exp_b, self.qh_pol_b, self.qh_pol_a1, self.qh_pol_a2, self.qh_pol_a3, self.hs_function, self.hs_exp_a, \
-					self.hs_exp_b, self.hs_pol_b, self.hs_pol_a1, self.hs_pol_a2, self.hs_pol_a3, self.sh_function, self.sh_exp_a, \
-					self.sh_exp_b, self.sh_pol_b, self.sh_pol_a1, self.sh_pol_a2, self.sh_pol_a3, 0)
-			fracQ = tempvar[0]
-			self.StorAct = tempvar[1]
-			bufstorage = self.StorAct #- required for individual runoff components
+		#-Routing for lake and/or reservoir modules
+		if self.LakeFLAG == 1 or self.ResFLAG == 1:
+			OldStorage = self.StorAct
+			#-Update storage (volume available for routing (m3))
+			self.StorAct = self.StorAct + (0.001 * pcr.cellarea() * (self.BaseR + RainR + GlacR + SnowR))
+			
+			#-Calculate fractions of storage to rout
+			if self.LakeFLAG:
+				tempvar = self.lakes.UpdateLakeHStore(self, pcr, pcrm)
+				LakeLevel = tempvar[0]
+				self.StorAct = tempvar[1]
+				LakeQfrac = self.lakes.QFrac(self, pcr, LakeLevel)
+				#-Assign LakeQfrac values to Qfrac map
+				Qfrac = LakeQfrac
+			if self.ResFLAG:
+				ResQfrac = self.reservoirs.QFrac(self, pcr)
+				#-Assign ResQfrac values to Qfrac map.
+				try:
+					Qfrac = pcr.ifthenelse(self.ResID != 0, ResQfrac, LakeQfrac)
+				except:
+					Qfrac = pcr.ifthenelse(self.ResID != 0, ResQfrac, 1-self.kx)
 			
 			#-Rout total runoff fraction
-			tempvar = self.routing.ROUT(pcr, self.StorAct, fracQ, self.QRAold, self.FlowDir, self.kx)
+			tempvar = self.routing.ROUT(pcr, Qfrac, self.FlowDir, self.StorAct)
 			self.StorAct = tempvar[0]
 			Q = tempvar[1]
-			self.QRAold = Q
 			self.reporting.reporting(self, pcr, 'QallRAtot', Q)
 			if self.mm_rep_FLAG == 1:
 				self.QTOTSubBasinTSS.sample(((Q * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) * 1000)
+			
+			#-report lake and reservoir waterbalance
+			if self.LakeFLAG == 1 and config.getint('REPORTING', 'Lake_wbal') ==1:
+				self.LakeInTSS.sample(Q*3600*24 + self.StorAct - OldStorage)
+				self.LakeOutTSS.sample(Q*3600*24) 
+				self.LakeStorTSS.sample(self.StorAct)
+			if self.ResFLAG == 1 and config.getint('REPORTING', 'Res_wbal') ==1:
+				self.ResInTSS.sample(Q*3600*24 + self.StorAct - OldStorage)
+				self.ResOutTSS.sample(Q*3600*24) 
+				self.ResStorTSS.sample(self.StorAct)
+			#-report total storage
+			self.reporting.reporting(self, pcr, 'TotStor', self.StorAct)
 
 			#-Routing of individual contributers
-			#-Snow routing
-			if self.SnowRA_FLAG == 1 and self.SnowFLAG == 1:
-				self.SnowRAstor = pcr.ifthenelse(self.LakeID !=0, bufstorage / self.contributers, self.SnowRAstor + (SnowR * 0.001 * pcr.cellarea()))
-				tempvar = self.routing.ROUT(pcr, self.SnowRAstor, fracQ, self.SnowRAold, self.FlowDir, self.kx)
-				self.SnowRAstor = tempvar[0]
-				SnowRA = tempvar[1]
-				self.SnowRAold = SnowRA
-				self.reporting.reporting(self, pcr, 'SnowRAtot', SnowRA)
-				if self.mm_rep_FLAG == 1:
-					self.QSNOWSubBasinTSS.sample(((SnowRA * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) *1000)
-			#-Rain routing
-			if self.RainRA_FLAG == 1:
-				self.RainRAstor = pcr.ifthenelse(self.LakeID != 0, bufstorage / self.contributers, self.RainRAstor + (RainR * 0.001 * pcr.cellarea()))
-				tempvar = self.routing.ROUT(pcr, self.RainRAstor, fracQ, self.RainRAold, self.FlowDir, self.kx)
-				self.RainRAstor = tempvar[0]
-				RainRA = tempvar[1]
-				self.RainRAold = RainRA
-				self.reporting.reporting(self, pcr, 'RainRAtot', RainRA)
-				if self.mm_rep_FLAG == 1:
-					self.QRAINSubBasinTSS.sample(((RainRA * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) *1000)
-			#-Glacier routing
-			if self.GlacRA_FLAG == 1 and self.GlacFLAG == 1:
-				self.GlacRAstor = pcr.ifthenelse(self.LakeID != 0, bufstorage / self.contributers, self.GlacRAstor + (GlacR * 0.001 * pcr.cellarea()))
-				tempvar = self.routing.ROUT(pcr, self.GlacRAstor, fracQ, self.GlacRAold, self.FlowDir, self.kx)
-				self.GlacRAstor = tempvar[0]
-				GlacRA = tempvar[1]
-				self.GlacRAold = GlacRA
-				self.reporting.reporting(self, pcr, 'GlacRAtot', GlacRA)
-				if self.mm_rep_FLAG == 1:
-					self.QGLACSubBasinTSS.sample(((GlacRA * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) *1000)		
-			#-Baseflow routing
-			if self.BaseRA_FLAG == 1:
-				self.BaseRAstor = pcr.ifthenelse(self.LakeID != 0, bufstorage / self.contributers, self.BaseRAstor + (self.BaseR * 0.001 * pcr.cellarea()))
-				tempvar = self.routing.ROUT(pcr, self.BaseRAstor, fracQ, self.BaseRAold, self.FlowDir, self.kx)
-				self.BaseRAstor = tempvar[0]
-				BaseRA = tempvar[1]
-				self.BaseRAold = BaseRA
-				self.reporting.reporting(self, pcr, 'BaseRAtot', BaseRA)
-				if self.mm_rep_FLAG == 1:
-					self.QBASFSubBasinTSS.sample(((BaseRA * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) *1000)	
+			if self.RoutComponents == 1:
+				#-Snow routing
+				if self.SnowRA_FLAG == 1 and self.SnowFLAG == 1:
+					self.SnowRAstor = self.SnowRAstor + (SnowR * 0.001 * pcr.cellarea())
+					tempvar = self.routing.ROUT(pcr, Qfrac, self.FlowDir, self.SnowRAstor)
+					self.SnowRAstor = tempvar[0]
+					SnowRA = tempvar[1]
+					self.reporting.reporting(self, pcr, 'SnowRAtot', SnowRA)
+					self.reporting.reporting(self, pcr, 'SnowStor', self.SnowRAstor)
+					if self.mm_rep_FLAG == 1:
+						self.QSNOWSubBasinTSS.sample(((SnowRA * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) *1000)
+				#-Rain routing
+				if self.RainRA_FLAG == 1:
+					self.RainRAstor = self.RainRAstor + (RainR * 0.001 * pcr.cellarea())
+					tempvar = self.routing.ROUT(pcr, Qfrac, self.FlowDir, self.RainRAstor)
+					self.RainRAstor = tempvar[0]
+					RainRA = tempvar[1]
+					self.reporting.reporting(self, pcr, 'RainRAtot', RainRA)
+					self.reporting.reporting(self, pcr, 'RainStor', self.RainRAstor)
+					if self.mm_rep_FLAG == 1:
+						self.QRAINSubBasinTSS.sample(((RainRA * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) *1000)
+				#-Glacier routing
+				if self.GlacRA_FLAG == 1 and self.GlacFLAG == 1:
+					self.GlacRAstor = self.GlacRAstor + (GlacR * 0.001 * pcr.cellarea())
+					tempvar = self.routing.ROUT(pcr, Qfrac, self.FlowDir, self.GlacRAstor)
+					self.GlacRAstor = tempvar[0]
+					GlacRA = tempvar[1]
+					self.reporting.reporting(self, pcr, 'GlacRAtot', GlacRA)
+					self.reporting.reporting(self, pcr, 'GlacStor', self.GlacRAstor)
+					if self.mm_rep_FLAG == 1:
+						self.QGLACSubBasinTSS.sample(((GlacRA * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) *1000)		
+				#-Baseflow routing
+				if self.BaseRA_FLAG == 1:
+					self.BaseRAstor = self.BaseRAstor + (self.BaseR * 0.001 * pcr.cellarea())
+					tempvar = self.routing.ROUT(pcr, Qfrac, self.FlowDir, self.BaseRAstor)
+					self.BaseRAstor = tempvar[0]
+					BaseRA = tempvar[1]
+					self.reporting.reporting(self, pcr, 'BaseRAtot', BaseRA)
+					self.reporting.reporting(self, pcr, 'BaseStor', self.BaseRAstor)
+					if self.mm_rep_FLAG == 1:
+						self.QBASFSubBasinTSS.sample(((BaseRA * 3600 * 24) / pcr.catchmenttotal(pcr.cellarea(), self.FlowDir)) *1000)	
 						
 		#-Normal routing module	
 		elif self.RoutFLAG == 1:
