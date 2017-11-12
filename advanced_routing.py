@@ -28,24 +28,17 @@ __email__ = "w.terink@futurewater.nl, terinkw@gmail.com"
 __date__ ='1 January 2017'
 ############################################################################################
 
-#-Function to calculate capillary rise
-def CapilRise(pcr, subfield, subwater, capmax, rootwater, rootsat, rootfield):
-    subrelwat = pcr.max(pcr.min((subwater / subfield), 1), 0)
-    rootrelwat = pcr.max(pcr.min((rootwater / rootfield), 1), 0)
-    caprise = pcr.min(subwater, capmax * (1 - rootrelwat) * subrelwat)
-    caprise = pcr.min(caprise, rootsat - rootwater)  # adding caprise can not exceed saturated rootwater content
-    return caprise
+# Advanced routing that is used for reservoirs or lakes
+print 'Advanced routing module for lakes and reservoirs imported'
 
-#-Function to calculate percolation from subsoil (only if groundwater module is used)
-def SubPercolation(pcr, subwater, subfield, subTT, gw, gwsat):
-    subperc =  pcr.ifthenelse((gw < gwsat) & ((subwater - subfield) > 0), (subwater - subfield) * (1 - pcr.exp(-1 / subTT)), 0)
-    return subperc
-
-#-Function to calculate drainage from subsoil (only if groundwater module is NOT used)
-def SubDrainage(pcr, subwater, subfield, subsat, drainvel, subdrainage, subTT):
-    subexcess = pcr.max(subwater - subfield, 0)
-    subexcessfrac = subexcess / (subsat - subfield)
-    sublateral = subexcessfrac * drainvel
-    subdrainage = (sublateral + subdrainage) * (1 - pcr.exp(-1 / subTT))
-    subdrainage = pcr.max(pcr.min(subdrainage, subwater), 0)
-    return subdrainage
+#-Function to rout the specific runoff
+def ROUT(self, pcr, rvolume, qold, qout, sres):
+    # Calculate the discharge Q (m3/d)
+    Q = pcr.accufractionflux(self.FlowDir, rvolume, self.QFRAC)
+    # Re-calculate Q, based on qold en kx, and assign Qout for cells being lake/reservoir
+    Q = pcr.ifthenelse(self.QFRAC==0, qout, (1-self.kx) * Q + (qold*24*3600) * self.kx)
+    # Only calculate inflow for lake/reservoir cells
+    Qin = pcr.ifthenelse(self.QFRAC==0, pcr.upstream(self.FlowDir, Q), 0)
+    sres = sres - qout + Qin
+    Q = Q / (24 * 3600)  #-only convert Q to m3/s
+    return sres, Q, Qin
