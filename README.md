@@ -3,14 +3,11 @@
 
 The Spatial Processes in Hydrology (SPHY) model is a hydrological modeling tool suitable for a wide range of water resource management applications. SPHY is a state-of-the-art, easy to use, robust tool, that can be applied for operational as well as strategic decision support. The SPHY model has been applied and tested in various studies ranging from real-time soil moisture predictions in flat lands, to operational reservoir inflow forecasting applications in mountainous catchments, irrigation scenarios in the Nile Basin, and detailed climate change impact studies in the snow- and glacier-melt dominated the Himalayan region.
 
-<img src="https://github.com/WilcoTerink/SPHY/blob/SPHY2.0/SPHY_concepts.jpg" alt="SPHY model concepts" height="500" width="500">
+<img src="https://github.com/FutureWater/SPHY/blob/SPHY2.0/SPHY_concepts.jpg" alt="SPHY model concepts" height="500" width="500">
 
 <b>Changes with respect to version 2.0</b></br>
 RESERVOIR module is split into two modules, being a LAKE and a RESERVOIR module. The advantage is that these modules can run independently from each other.
 The new RESERVOIR module allows the implementation of a simple or advanced reservoir, whereas the advanced reservoir allows for operational reservoir management.
-
-<b>SPHY model user group</b></br>
-A user group for the SPHY model is available in <a href="https://groups.google.com/forum/#!forum/sphy-model-user" target="_blank">Google Groups</a>. You can use this group to post Questions and Answers related to the source code, available plugins, input and output formats, calibration, applications, and suggestions for improvements.
 
 <b>Documentation</b>
 <ul>
