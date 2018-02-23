@@ -10,9 +10,6 @@ Glaciers in version 2.1 and 2.0 were not mass conserving. In previous versions t
 
 <img src="https://github.com/WilcoTerink/SPHY/blob/SPHY2.2/glacier_mass_balance.jpg" alt="Example of annual glacier mass balance" height="400" width="400">
 
-<b>SPHY model user group</b></br>
-A user group for the SPHY model is available in <a href="https://groups.google.com/forum/#!forum/sphy-model-user" target="_blank">Google Groups</a>. You can use this group to post Questions and Answers related to the source code, available plugins, input and output formats, calibration, applications, and suggestions for improvements.
-
 <b>Documentation</b>
 <ul>
 
