@@ -20,7 +20,7 @@
 # Email: info@futurewater.nl
 
 #-Authorship information-###################################################################
-__author__ = "W. Terink, A. Lutz, G. Simons, W. Immerzeel and P. Droogers"
+__authors__ = "W. Terink, A. Lutz, G. Simons, W. Immerzeel and P. Droogers"
 __copyright__ = "FutureWater"
 __license__ = "GPL"
 __version__ = "erosion testing"
